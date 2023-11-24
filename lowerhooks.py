@@ -779,7 +779,7 @@ def run_parser():
     """
     Run the argument parser for the command-line interface.
     """
-    parser = argparse.ArgumentParser(description="Insert license here")
+    parser = argparse.ArgumentParser()
     parser.add_argument("-d", "--draw",
         action="store_true",
         help="draw the relative Betti diagrams.")
