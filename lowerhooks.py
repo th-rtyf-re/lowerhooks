@@ -1,4 +1,21 @@
+#!/usr/bin/env python
 # -*-coding:utf8-*-
+
+# lowerhooks.py: a proof-of-concept code for computing relative Betti diagrams
+# Copyright (C) 2023  Isaac Ren
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import argparse
 from collections import namedtuple
@@ -8,7 +25,6 @@ import matplotlib.pyplot as plt
 import matplotlib.patches as mpatches
 from matplotlib.collections import LineCollection, PatchCollection
 import numpy as np
-from typing import *
 
 # Program name for the command-line interface
 PROG = "lowerhooks"
@@ -34,9 +50,10 @@ We work modulo 2, but store field values as integers. Thus sums are done by
 """
 SECTION: Classes
 
-We define a class FreePresentation. There are also some auxiliary functions.
+We define a class FreePresentation, with general methods and a method to
+compute relative Betti diagrams.
 
-We also define a class QuotientSpace, which is a named tuple.
+We also define a class QuotientSpace, which is a Python named tuple.
 """
 class FreePresentation():
     """
