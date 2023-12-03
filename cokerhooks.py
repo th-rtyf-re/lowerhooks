@@ -309,24 +309,26 @@ class FreePresentation():
         betti_diagrams
             See documentation for all_Betti_diagrams().
         """
-        cokernel = np.zeros(self.shape * 2 + (self.n_gen,), dtype=bool)
-        quotient = np.zeros(self.shape * 2 + (self.n_gen, self.n_gen), dtype=int)
+        # cokernel = np.zeros(self.shape * 2 + (self.n_gen,), dtype=bool)
+        # quotient = np.zeros(self.shape * 2 + (self.n_gen, self.n_gen), dtype=int)
+        cokernel = np.full(self.shape * 2, None, dtype=object)
+        quotient = np.full(self.shape * 2, None, dtype=object)
         relevant = self._relevant_grades()
         
         betti = np.zeros(self.shape * 2 + (2 * self.dim + 1,), dtype=int)
         for index in it.product(*(range(n) for n in self.shape * 2)):
             grade = np.asarray(index)
             if ((grade[:self.dim] <= grade[self.dim:]).all()
-                and (grade[:self.dim] != grade[self.dim:]).any()):
-                self._coker(grade[:self.dim], grade[self.dim:], outs=(cokernel[index], quotient[index]))
+                and not (grade[:self.dim] == grade[self.dim:]).all()):
+                # self._coker(grade[:self.dim], grade[self.dim:], outs=(cokernel[index], quotient[index]))
+                # cokernel[index], quotient[index] = self._coker(grade[:self.dim], grade[self.dim:])
                 if self._check_nontrivial(index, relevant):
-                    # self._coker(grade[:self.dim], grade[self.dim:], outs=(cokernel[index], quotient[index]))
                     boundary_maps = self._all_boundary_maps(cokernel, quotient, grade)
+                    # print("compare inside", index, xcokernel[index].nonzero()[0], cokernel[index])
                     H = self._homology_dims(boundary_maps)
                     betti[index][:len(H)] = H
-                # else:
-                #     self._coker_without_quotient(grade[:self.dim], grade[self.dim:], cokernel[index])
-                    # print(cokernel[index])
+        
+        # print("cokernel, quotient:", sparsity(cokernel), sparsity(quotient))
         
         temp = np.hstack((np.argwhere(betti), betti[betti.nonzero()].reshape(-1, 1)))
         betti_diagrams = temp[temp[:, 0] > 0]
@@ -334,11 +336,11 @@ class FreePresentation():
         return betti_diagrams
     
     
-    def _coker(self, a, b, outs):
+    def _coker(self, a, b):
         """
         Compute a basis of C := coker(M(a) -> M(b)), which is a subset of the
         presentation generators, as well as the quotient map G(b)/G(a) -> C.
-        We use the following snake diagram:
+        We use the following diagram:
              
              R(a) ---------------> G(a) ->> M(a) -> 0
               |  '->> I(a) >------^ |        |
@@ -378,17 +380,14 @@ class FreePresentation():
         """
         R_quotient = (self.R_grade <= b).all(axis=1) # new array created
         
-        
-        # G_col = np.any(self.G_grade > a, axis=1)
-        # G_b = np.all(self.G_grade <= b, axis=1)
-        # np.logical_and(G_col, G_b, out=G_col)
-        G_col = np.logical_and((self.G_grade > a).any(axis=1), (self.G_grade <= b).all(axis=1))
+        G_col = np.logical_and((np.logical_not((self.G_grade <= a).all(axis=1))), (self.G_grade <= b).all(axis=1))
+        ## alt:
+        # G_col = np.logical_and((self.G_grade > a).any(axis=1), (self.G_grade <= b).all(axis=1))
         
         A = self.matrix[G_col, :] # copy
-        B = outs[1]
+        B = np.zeros((self.n_gen, self.n_gen), dtype=int)
         n, p = A.shape
-                
-        # low_of = np.full(n, -1, dtype=int)
+        
         self.low_of[:] = -1
         for j2 in it.chain(R_quotient.nonzero()[0], G_col.nonzero()[0] + self.n_rel):
             for i in range(n - 1, -1, -1):
@@ -403,11 +402,15 @@ class FreePresentation():
                         self.low_of[i] = j2
                         break
         
-        gens = np.any(A[:, self.R_grade.shape[0]:], axis=0, out=outs[0])
-        for i, b in enumerate(gens):
-            if b:
-                B[:, i] = 0
-                B[i, i] = 1
+        C_basis = np.any(A[:, self.n_rel:], axis=0).nonzero()[0]
+        # for i in C_basis:
+        #     B[:, i] = 0
+        #     B[i, i] = 1
+        M = B[C_basis, :]
+        for i, j in enumerate(C_basis):
+            M[:, j] = 0
+            M[i, j] = 1
+        return C_basis, M
     
     
     def _coker_without_quotient(self, a, b, out):
@@ -431,7 +434,7 @@ class FreePresentation():
         
         np.any(A[:, self.R_grade.shape[0]:], axis=0, out=out)
     
-    
+        
     def _all_boundary_maps(self, cokernel, quotient, grade):
         """
         Compute all boundary maps for the Koszul complex at a given grade.
@@ -461,9 +464,11 @@ class FreePresentation():
         sizes = np.zeros(complex_length + 1, dtype=int)
         for shift in it.product(*shift_gen):
             i = sum(shift)
-            sh_grade = grade - shift
             pos[shift] = sizes[i]
-            sizes[i] += np.count_nonzero(cokernel_view[shift])
+            if cokernel_view[shift] is None:
+                sh_grade = grade - shift
+                cokernel_view[shift], quotient_view[shift] = self._coker(sh_grade[:self.dim], sh_grade[self.dim:])
+            sizes[i] += len(cokernel_view[shift])
         
         bmaps = [np.zeros((sizes[i], sizes[i + 1]), dtype=int) for i in range(complex_length)]
         for s_i in it.product(*shift_gen):
@@ -471,8 +476,7 @@ class FreePresentation():
             for d in range(2 * self.dim):
                 if s_i[d]: # target exists
                     t_i = s_i[:d] + (0,) + s_i[d + 1:] # target shift
-                    M = quotient_view[t_i][cokernel_view[t_i].nonzero()[0].reshape(-1, 1), cokernel_view[s_i].nonzero()[0].reshape(1, -1)]
-                    # M = quotient_view[t_i][np.ix_(cokernel_view[t_i], cokernel_view[s_i])] # Why is this slower!!!
+                    M = quotient_view[t_i][:, cokernel_view[s_i]]
                     bmaps[deg - 1][
                         pos[t_i]:pos[t_i] + M.shape[0],
                         pos[s_i]:pos[s_i] + M.shape[1]
@@ -688,6 +692,14 @@ def reduce_standard(A):
                     break
     is_low = (low_of > -1)
     return A, is_low
+
+
+def sparsity(A):
+    """sparsity of matrix"""
+    if A.size > 0:
+        return 1. - (np.count_nonzero(A) / A.size)
+    else:
+        return 0.
 
 
 """
