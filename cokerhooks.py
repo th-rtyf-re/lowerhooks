@@ -18,7 +18,6 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 import argparse
-from collections import namedtuple
 import itertools as it
 import matplotlib
 import matplotlib.pyplot as plt
@@ -27,6 +26,7 @@ from matplotlib.collections import LineCollection, PatchCollection
 import numpy as np
 
 import cProfile
+import time
 
 # Program name for the command-line interface
 PROG = "lowerhooks"
@@ -80,7 +80,7 @@ class FreePresentation():
         Dimension of the grid.
     n_gen, n_rel: int
         Number of generators and relations, respectively.
-    shape: list of int
+    shape: tuple of int
         Maximal coordinate in each dimension of the grid.
     G_grade: np.ndarray
         Array of shape (2, n_gen) of the grades of the generators.
@@ -197,8 +197,8 @@ class FreePresentation():
         
         x_lim = max(x_max, y_max / aspect) * (1 + padding)
         y_lim = max(y_max, x_max * aspect) * (1 + padding * aspect)
-        k_rel = np.argmax(self.R_grade[:, 0])
-        kill_x, kill_y = self.R_grade[k_rel]
+        
+        real_R_grade = self.R_grade[(self.R_grade < np.asarray(self.shape, dtype=int)).all(axis=1)]
         
         ax.grid(True)
         ax.set_aspect("equal", adjustable="box", share=True)
@@ -206,8 +206,8 @@ class FreePresentation():
         ax.set_ylim(-self.shape[1] * 0.1, self.shape[1] * 1.1)
         
         # Draw rectangles
-        gen_rects = [mpatches.Rectangle(g, kill_x - g[0], kill_y - g[1]) for g in self.G_grade]
-        rel_rects = [mpatches.Rectangle(g, kill_x - g[0], kill_y - g[1]) for g in self.R_grade[:k_rel]]
+        gen_rects = [mpatches.Rectangle(g, self.shape[0] - g[0], self.shape[1] - g[1]) for g in self.G_grade]
+        rel_rects = [mpatches.Rectangle(g, self.shape[0] - g[0], self.shape[1] - g[1]) for g in real_R_grade]
         
         ax.add_collection(PatchCollection(gen_rects, fc = gen_color, ec = "none", alpha=.6))
         # clear before adding relations
@@ -217,7 +217,7 @@ class FreePresentation():
         # Draw generators and relations
         radius = x_lim / 100
         gen_points = [mpatches.Circle(gen, radius=radius * 1.2) for gen in self.G_grade]
-        rel_points = [mpatches.Circle(rel, radius=radius) for rel in self.R_grade[:k_rel]]
+        rel_points = [mpatches.Circle(rel, radius=radius) for rel in real_R_grade]
         extra_points = [mpatches.CirclePolygon(p, radius=1.6*radius, resolution=5) for p in extra]
         
         ax.add_collection(PatchCollection(gen_points, fc = "0", ec = "none", zorder = 2.5))
@@ -227,7 +227,7 @@ class FreePresentation():
         # Draw differential
         diff_lines = []
         for i, gen in enumerate(self.G_grade):
-            for j, rel in enumerate(self.R_grade[:k_rel]):
+            for j, rel in enumerate(real_R_grade):
                 if self.R_image[i, j]:
                     diff_lines.append([gen, rel])
         ax.add_collection(LineCollection(diff_lines, colors = "0"))
@@ -309,8 +309,6 @@ class FreePresentation():
         betti_diagrams
             See documentation for all_Betti_diagrams().
         """
-        # cokernel = np.zeros(self.shape * 2 + (self.n_gen,), dtype=bool)
-        # quotient = np.zeros(self.shape * 2 + (self.n_gen, self.n_gen), dtype=int)
         cokernel = np.full(self.shape * 2, None, dtype=object)
         quotient = np.full(self.shape * 2, None, dtype=object)
         relevant = self._relevant_grades()
@@ -320,19 +318,22 @@ class FreePresentation():
             grade = np.asarray(index)
             if ((grade[:self.dim] <= grade[self.dim:]).all()
                 and not (grade[:self.dim] == grade[self.dim:]).all()):
-                # self._coker(grade[:self.dim], grade[self.dim:], outs=(cokernel[index], quotient[index]))
-                # cokernel[index], quotient[index] = self._coker(grade[:self.dim], grade[self.dim:])
                 if self._check_nontrivial(index, relevant):
                     boundary_maps = self._all_boundary_maps(cokernel, quotient, grade)
-                    # print("compare inside", index, xcokernel[index].nonzero()[0], cokernel[index])
                     H = self._homology_dims(boundary_maps)
                     betti[index][:len(H)] = H
         
-        # print("cokernel, quotient:", sparsity(cokernel), sparsity(quotient))
+        # data = np.asarray([len(x) for x in cokernel.ravel() if x is not None])
+        # print(f"average cokernel size: {sum(data) / len(data)}")
+        # # https://stackoverflow.com/a/30121210/17357015
+        # d = np.diff(np.unique(data)).min()
+        # left_of_first_bin = data.min() - float(d)/2
+        # right_of_last_bin = data.max() + float(d)/2
+        # plt.hist(data, np.arange(left_of_first_bin, right_of_last_bin + d, d))
+        # plt.show()
         
         temp = np.hstack((np.argwhere(betti), betti[betti.nonzero()].reshape(-1, 1)))
         betti_diagrams = temp[temp[:, 0] > 0]
-        betti_diagrams[:, -2] -= 2
         return betti_diagrams
     
     
@@ -403,9 +404,6 @@ class FreePresentation():
                         break
         
         C_basis = np.any(A[:, self.n_rel:], axis=0).nonzero()[0]
-        # for i in C_basis:
-        #     B[:, i] = 0
-        #     B[i, i] = 1
         M = B[C_basis, :]
         for i, j in enumerate(C_basis):
             M[:, j] = 0
@@ -413,28 +411,6 @@ class FreePresentation():
         return C_basis, M
     
     
-    def _coker_without_quotient(self, a, b, out):
-        R_quotient = (self.R_grade <= b).all(axis=1) # new array created
-        
-        G_col = np.logical_and((self.G_grade > a).any(axis=1), (self.G_grade <= b).all(axis=1))
-        
-        A = self.matrix[G_col, :] # copy
-        n, p = A.shape
-                
-        low_of = np.full(n, -1, dtype=int)
-        for j2 in it.chain(R_quotient.nonzero()[0], G_col.nonzero()[0] + self.n_rel):
-            for i in range(n - 1, -1, -1):
-                if A[i, j2]: # current low
-                    j1 = low_of[i]
-                    if j1 >= 0: # found this low
-                        A[:, j2] = (A[:, j2] + A[:, j1]) % 2
-                    else: # did not find this low
-                        low_of[i] = j2
-                        break
-        
-        np.any(A[:, self.R_grade.shape[0]:], axis=0, out=out)
-    
-        
     def _all_boundary_maps(self, cokernel, quotient, grade):
         """
         Compute all boundary maps for the Koszul complex at a given grade.
@@ -461,26 +437,29 @@ class FreePresentation():
         
         # pos keeps track of each cokernel's position in the boundary matrices
         pos = np.zeros(shift_shape, dtype=int)
-        sizes = np.zeros(complex_length + 1, dtype=int)
+        size = np.zeros(shift_shape, dtype=int)
+        tot_size = np.zeros(complex_length + 1, dtype=int)
         for shift in it.product(*shift_gen):
             i = sum(shift)
-            pos[shift] = sizes[i]
+            pos[shift] = tot_size[i]
             if cokernel_view[shift] is None:
                 sh_grade = grade - shift
                 cokernel_view[shift], quotient_view[shift] = self._coker(sh_grade[:self.dim], sh_grade[self.dim:])
-            sizes[i] += len(cokernel_view[shift])
+            size[shift] = len(cokernel_view[shift])
+            tot_size[i] += size[shift]
         
-        bmaps = [np.zeros((sizes[i], sizes[i + 1]), dtype=int) for i in range(complex_length)]
+        bmaps = [np.zeros((tot_size[i], tot_size[i + 1]), dtype=int) for i in range(complex_length)]
         for s_i in it.product(*shift_gen):
             deg = sum(s_i)
             for d in range(2 * self.dim):
                 if s_i[d]: # target exists
                     t_i = s_i[:d] + (0,) + s_i[d + 1:] # target shift
-                    M = quotient_view[t_i][:, cokernel_view[s_i]]
-                    bmaps[deg - 1][
-                        pos[t_i]:pos[t_i] + M.shape[0],
-                        pos[s_i]:pos[s_i] + M.shape[1]
-                    ] = M
+                    quotient_view[t_i].take(
+                        cokernel_view[s_i],
+                        axis=1,
+                        out=bmaps[deg - 1][pos[t_i]:pos[t_i] + size[t_i], pos[s_i]:pos[s_i] + size[s_i]],
+                        mode="wrap"
+                    )
         return bmaps
     
     
@@ -488,6 +467,9 @@ class FreePresentation():
         """
         Compute homology dimensions given boundary maps. Note: this function
         transforms the argument boundary_maps.
+        
+        With the cokernel trick, we only need homology in degrees 2 and higher,
+        so we avoid computing 0 homology and only compute 1-cycles.
         
         Parameters
         ----------
@@ -497,21 +479,15 @@ class FreePresentation():
         Returns
         -------
         h_dims: list of int
-            List of dimensions of the homology of the chain complex.
+            List of dimensions of the homology in degree 2 and higher of the
+            chain complex.
         """
-        if len(boundary_maps) == 0:
-            return []
-        
+        ranks = [rank(D) for D in boundary_maps[1:]]
         h_dims = []
-        cycle_dim, boundary_dim = boundary_maps[0].shape[0], 0
-        for D in boundary_maps:
-            reduced_D, is_low = reduce_standard(D)
-            boundary_dim = np.count_nonzero(is_low)
-            h_dims.append(cycle_dim - boundary_dim)
-            cycle_dim = np.count_nonzero(np.logical_not(reduced_D.any(axis=0)))
-        h_dims.append(cycle_dim)
-        
+        for i in range(1, len(boundary_maps) - 1):
+            h_dims.append(boundary_maps[i + 1].shape[0] - ranks[i] - ranks[i - 1])
         return h_dims
+    
     
     def _relevant_grades(self):
         """
@@ -583,8 +559,8 @@ def random_2D_presentation(grid_size, seed=None, n_gen=5, n_rel=5, image_proba=.
     In addition, a relation is added for each generator to cancel it at the
     top right corner of the grid.
     
-    Generators and relations are sorted by lexicographical order (which is a
-    refinement of the product order).
+    Generators and relations are sorted by reverse lexicographical order (which
+    is a refinement of the product order).
     
     Parameters
     ----------
@@ -617,6 +593,10 @@ def random_2D_presentation(grid_size, seed=None, n_gen=5, n_rel=5, image_proba=.
     G_grade = rng.integers(grid_size, size=(n_gen, 2))
     R_grade = rng.integers(grid_size, size=(n_rel + n_gen, 2))
     R_grade[-n_gen:, :] = grid_size
+    G_sort = np.lexsort(G_grade.T)
+    G_grade = G_grade[G_sort]
+    R_sort = np.lexsort(R_grade.T)
+    R_grade = R_grade[R_sort]
     
     R_image = rng.binomial(1, image_proba, size=(n_gen, n_rel))
     R_image = np.concatenate((R_image, np.eye(n_gen, dtype=int)), axis=1)
@@ -661,10 +641,10 @@ def draw_2D_Betti_diagrams(axes, betti_diagrams, max_deg):
         axes[d].add_collection(LineCollection(lines[d], colors = "0"))
 
 
-def reduce_standard(A):
+def rank(A):
     """
-    Reduce the matrix A by the "low" algorithm using the standard row order,
-    assuming that the coefficients are in Z/2Z.
+    Comput the rank of the matrix A using the "low" algorithm, with
+    coefficients in Z/2Z.
     Note: A is modified by the function.
     
     Parameters
@@ -674,14 +654,13 @@ def reduce_standard(A):
     
     Returns
     -------
-    A: np.ndarray of int
-        The reduced matrix.
-    is_low: np.ndarray of bool
-        bool of rows that are low for some column.
+    ret: int
+        Rank of A.
     """
     n, p = A.shape
     
     low_of = np.full(n, -1, dtype=int)
+    ret = 0
     for j2 in range(p):
         for i in range(n - 1, -1, -1):
             if A[i, j2]: # current low
@@ -689,23 +668,14 @@ def reduce_standard(A):
                     A[:, j2] = (A[:, j2] + A[:, low_of[i]]) % 2
                 else: # did not find this low
                     low_of[i] = j2
+                    ret += 1
                     break
-    is_low = (low_of > -1)
-    return A, is_low
-
-
-def sparsity(A):
-    """sparsity of matrix"""
-    if A.size > 0:
-        return 1. - (np.count_nonzero(A) / A.size)
-    else:
-        return 0.
+    return ret
 
 
 """
 SECTION: Command-line interface
 """
-
 def run_parser():
     """
     Run the argument parser for the command-line interface.
@@ -727,6 +697,9 @@ text file containing the __repr__ of a FreePresentation object.",
         action="store",
         help="store __repr__ of the computed relative Betti diagram array.",
         metavar="filename")
+    parser.add_argument("-p", "--profile",
+        action="store_true",
+        help="Run cProfile on the computation of relative Betti diagrams.")
     parser.add_argument("-r", "--random",
         action="store",
         nargs="*",
@@ -757,7 +730,17 @@ text file containing the __repr__ of a FreePresentation object.",
     if args.verbose:
         print(f"[{PROG}] presentation:", presentation, sep="\n")
     
-    betti_diagrams = presentation.all_Betti_diagrams()
+    if args.profile:
+        code = "presentation.all_Betti_diagrams()"
+        print(f"[{PROG}] Running cProfile on the code `{code}`")
+        cProfile.runctx(code, globals={"presentation": presentation}, locals={})
+        return
+    elif args.verbose:
+        t = time.time()
+        betti_diagrams = presentation.all_Betti_diagrams()
+        print(f"[{PROG}] done in {time.time() - t} seconds")
+    else:
+        betti_diagrams = presentation.all_Betti_diagrams()
     
     if args.verbose:
         print(f"[{PROG}] betti diagrams:", betti_diagrams, sep="\n")
@@ -781,8 +764,4 @@ text file containing the __repr__ of a FreePresentation object.",
 
 
 if __name__ == "__main__":
-    # run_parser()
-    with open("example.txt", 'r', encoding="utf-8") as f:
-        presentation = eval(f.read())
-    cProfile.run("presentation.all_Betti_diagrams()")
-    
+    run_parser()
